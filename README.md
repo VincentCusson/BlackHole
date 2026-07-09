@@ -156,6 +156,8 @@ kDevice2_HasOutput
 
 kLatency_Frame_Size
 kNumber_Of_Channels
+kNumber_Of_Input_Channels
+kNumber_Of_Output_Channels
 kSampleRates
 ```
 
@@ -202,6 +204,18 @@ xcodebuild \
 `kLatency_Frame_Size` is how much time in frames that the driver has to process incoming and outgoing audio. It can be used to delay the audio inside of BlackHole up to a maximum of 65536 frames. This may be helpful if using BlackHole with a high channel count. 
 
 `kSampleRates` set the sample rate or sample rates of the audio device. If using multiple sample rates separate each with a comma (`,`). For example: `kSampleRates='44100,48000'`.
+
+### Asymmetric Input/Output Channel Counts
+
+By default `kNumber_Of_Channels` sets the same channel count for both input and output. `kNumber_Of_Input_Channels` and `kNumber_Of_Output_Channels` can be used instead to give each direction its own count — useful when emulating hardware that isn't symmetric.
+
+```bash
+xcodebuild \
+  -project BlackHole.xcodeproj \
+  GCC_PREPROCESSOR_DEFINITIONS='$GCC_PREPROCESSOR_DEFINITIONS kNumber_Of_Input_Channels=4 kNumber_Of_Output_Channels=2'
+```
+
+Both default to `kNumber_Of_Channels`, so a build that doesn't set them behaves exactly as before. When the two counts differ, channels beyond the smaller of the two counts are filled with silence rather than looped-back audio, since there's no matching channel on the other side.
 
 ### Mirror Device
 
