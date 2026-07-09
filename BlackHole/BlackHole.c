@@ -238,6 +238,30 @@ struct ObjectInfo {
 #define                             kNumber_Of_Channels                 2
 #endif
 
+// Optional, opt-in per-channel names (e.g. "Analog 1,Analog 2,ADAT 1,ADAT 2"), surfaced via
+// kAudioObjectPropertyElementName. One comma-separated string per scope; left empty by default
+// so builds that don't set these behave exactly as before. Parsed once in BlackHole_Initialize.
+#ifndef kChannel_Names_Input
+#define                             kChannel_Names_Input                ""
+#endif
+
+#ifndef kChannel_Names_Output
+#define                             kChannel_Names_Output               ""
+#endif
+
+// Per-direction channel counts, defaulting to kNumber_Of_Channels. Declared here (rather than
+// just using kNumber_Of_Channels directly) so the name arrays below are sized correctly if a
+// separate, independent patch (kept as its own standalone PR) later gives the two directions
+// different counts — that patch defines these same two constants the same way, so whichever
+// patch is applied first "wins" the #ifndef and both stay consistent with each other.
+#ifndef kNumber_Of_Input_Channels
+#define                             kNumber_Of_Input_Channels           kNumber_Of_Channels
+#endif
+
+#ifndef kNumber_Of_Output_Channels
+#define                             kNumber_Of_Output_Channels          kNumber_Of_Channels
+#endif
+
 #ifndef kEnableVolumeControl
 #define                             kEnableVolumeControl                 true
 #endif
@@ -256,6 +280,11 @@ static AudioServerPlugInHostRef     gPlugIn_Host                        = NULL;
 
 
 static CFStringRef                  gBox_Name                           = NULL;
+
+static CFStringRef                  gInputChannelNames[kNumber_Of_Input_Channels];
+static UInt32                       gInputChannelNamesCount             = 0;
+static CFStringRef                  gOutputChannelNames[kNumber_Of_Output_Channels];
+static UInt32                       gOutputChannelNamesCount            = 0;
 
 #ifndef kBox_Aquired
 #define                             kBox_Aquired                 	true
@@ -449,6 +478,55 @@ static CFStringRef get_device_name(void)      { RETURN_FORMATTED_STRING(kDevice_
 static CFStringRef get_device2_uid(void)      { RETURN_FORMATTED_STRING(kDevice2_UID) }
 static CFStringRef get_device2_name(void)     { RETURN_FORMATTED_STRING(kDevice2_Name) }
 static CFStringRef get_device_model_uid(void) { RETURN_FORMATTED_STRING(kDevice_ModelUID) }
+
+// Channel names
+//
+// Splits a comma-separated list (e.g. "Analog 1,Analog 2,ADAT 1,ADAT 2") into up to maxCount
+// CFStrings, trimming whitespace around each entry. Empty/unset input yields zero entries.
+static void parse_channel_names(const char* csv, CFStringRef* outArray, UInt32 maxCount, UInt32* outCount)
+{
+    *outCount = 0;
+    if(csv == NULL || csv[0] == '\0') { return; }
+
+    CFStringRef theFullString = CFStringCreateWithCString(NULL, csv, kCFStringEncodingUTF8);
+    CFArrayRef theParts = CFStringCreateArrayBySeparatingStrings(NULL, theFullString, CFSTR(","));
+    CFIndex theCount = CFArrayGetCount(theParts);
+
+    for(CFIndex i = 0; i < theCount && (UInt32)i < maxCount; i++)
+    {
+        CFStringRef thePart = (CFStringRef)CFArrayGetValueAtIndex(theParts, i);
+        CFMutableStringRef theTrimmed = CFStringCreateMutableCopy(NULL, 0, thePart);
+        CFStringTrimWhitespace(theTrimmed);
+        outArray[i] = theTrimmed;
+        (*outCount)++;
+    }
+
+    CFRelease(theParts);
+    CFRelease(theFullString);
+}
+
+// Cheap existence check for kAudioObjectPropertyElementName, used by BlackHole_HasDeviceProperty
+// so it doesn't need to allocate anything just to answer yes/no. mElement is 1-based per
+// CoreAudio convention (element 0 addresses the whole scope, not an individual channel).
+static Boolean has_channel_name(AudioObjectPropertyScope scope, UInt32 element)
+{
+    if(element < 1) { return false; }
+    UInt32 theIndex = element - 1;
+    if(scope == kAudioObjectPropertyScopeInput)  { return theIndex < gInputChannelNamesCount; }
+    if(scope == kAudioObjectPropertyScopeOutput) { return theIndex < gOutputChannelNamesCount; }
+    return false;
+}
+
+// Returns a fresh retained CFStringRef for the given scope/channel, or NULL if none is
+// configured. Follows the same "caller owns the returned reference" convention as
+// get_device_name() and friends above.
+static CFStringRef get_channel_name(AudioObjectPropertyScope scope, UInt32 element)
+{
+    if(!has_channel_name(scope, element)) { return NULL; }
+    UInt32 theIndex = element - 1;
+    CFStringRef theName = (scope == kAudioObjectPropertyScopeInput) ? gInputChannelNames[theIndex] : gOutputChannelNames[theIndex];
+    return CFStringCreateCopy(NULL, theName);
+}
 
 // Volume conversions
 
@@ -788,9 +866,13 @@ static OSStatus	BlackHole_Initialize(AudioServerPlugInDriverRef inDriver, AudioS
 	theHostClockFrequency *= 1000000000.0;
 	gDevice_HostTicksPerFrame = theHostClockFrequency / gDevice_SampleRate;
     gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
-    
+
     // DebugMsg("BlackHole theTimeBaseInfo.numer: %u \t theTimeBaseInfo.denom: %u", theTimeBaseInfo.numer, theTimeBaseInfo.denom);
-	
+
+	//	parse the optional per-channel names, if any were configured at build time
+	parse_channel_names(kChannel_Names_Input, gInputChannelNames, kNumber_Of_Input_Channels, &gInputChannelNamesCount);
+	parse_channel_names(kChannel_Names_Output, gOutputChannelNames, kNumber_Of_Output_Channels, &gOutputChannelNamesCount);
+
 Done:
 	return theAnswer;
 }
@@ -2205,6 +2287,10 @@ static Boolean	BlackHole_HasDeviceProperty(AudioServerPlugInDriverRef inDriver, 
 		case kAudioDevicePropertyPreferredChannelLayout:
 			theAnswer = (inAddress->mScope == kAudioObjectPropertyScopeInput) || (inAddress->mScope == kAudioObjectPropertyScopeOutput);
 			break;
+
+		case kAudioObjectPropertyElementName:
+			theAnswer = has_channel_name(inAddress->mScope, inAddress->mElement);
+			break;
 	};
 
 Done:
@@ -2257,9 +2343,10 @@ static OSStatus	BlackHole_IsDevicePropertySettable(AudioServerPlugInDriverRef in
 		case kAudioDevicePropertyPreferredChannelLayout:
 		case kAudioDevicePropertyZeroTimeStampPeriod:
 		case kAudioDevicePropertyIcon:
+		case kAudioObjectPropertyElementName:
 			*outIsSettable = false;
 			break;
-		
+
 		case kAudioDevicePropertyNominalSampleRate:
 			*outIsSettable = true;
 			break;
@@ -2387,6 +2474,10 @@ static OSStatus	BlackHole_GetDevicePropertyDataSize(AudioServerPlugInDriverRef i
 
 		case kAudioDevicePropertyPreferredChannelLayout:
 			*outDataSize = offsetof(AudioChannelLayout, mChannelDescriptions) + (kNumber_Of_Channels * sizeof(AudioChannelDescription));
+			break;
+
+		case kAudioObjectPropertyElementName:
+			*outDataSize = sizeof(CFStringRef);
 			break;
 
 		case kAudioDevicePropertyZeroTimeStampPeriod:
@@ -2821,6 +2912,19 @@ static OSStatus	BlackHole_GetDevicePropertyData(AudioServerPlugInDriverRef inDri
 					((AudioChannelLayout*)outData)->mChannelDescriptions[theItemIndex].mCoordinates[2] = 0;
 				}
 				*outDataSize = theACLSize;
+			}
+			break;
+
+		case kAudioObjectPropertyElementName:
+			//	Optional, opt-in human readable name for one input/output channel (e.g. "ADAT 3"),
+			//	configured via kChannel_Names_Input/kChannel_Names_Output. Unconfigured channels
+			//	report kAudioHardwareUnknownPropertyError, same as if this case didn't exist.
+			FailWithAction(inDataSize < sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetDevicePropertyData: not enough space for the return value of kAudioObjectPropertyElementName for the device");
+			{
+				CFStringRef theChannelName = get_channel_name(inAddress->mScope, inAddress->mElement);
+				FailWithAction(theChannelName == NULL, theAnswer = kAudioHardwareUnknownPropertyError, Done, "BlackHole_GetDevicePropertyData: no channel name configured for kAudioObjectPropertyElementName");
+				*((CFStringRef*)outData) = theChannelName;
+				*outDataSize = sizeof(CFStringRef);
 			}
 			break;
 
