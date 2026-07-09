@@ -157,6 +157,9 @@ kDevice2_HasOutput
 kLatency_Frame_Size
 kNumber_Of_Channels
 kSampleRates
+
+kChannel_Names_Input
+kChannel_Names_Output
 ```
 
 They can be specified at build time with `xcodebuild` using `GCC_PREPROCESSOR_DEFINITIONS`. 
@@ -202,6 +205,20 @@ xcodebuild \
 `kLatency_Frame_Size` is how much time in frames that the driver has to process incoming and outgoing audio. It can be used to delay the audio inside of BlackHole up to a maximum of 65536 frames. This may be helpful if using BlackHole with a high channel count. 
 
 `kSampleRates` set the sample rate or sample rates of the audio device. If using multiple sample rates separate each with a comma (`,`). For example: `kSampleRates='44100,48000'`.
+
+### Naming Individual Channels
+
+`kChannel_Names_Input` and `kChannel_Names_Output` give each channel its own name (e.g. "Analog 1", "ADAT 3"), surfaced via `kAudioObjectPropertyElementName`. Each is a single comma-separated string, one name per channel in that scope.
+
+```bash
+xcodebuild \
+  -project BlackHole.xcodeproj \
+  GCC_PREPROCESSOR_DEFINITIONS='$GCC_PREPROCESSOR_DEFINITIONS
+  kChannel_Names_Input=\"Analog 1,Analog 2,ADAT 1,ADAT 2\"
+  kChannel_Names_Output=\"Analog 1,Analog 2,ADAT 1,ADAT 2\"'
+```
+
+Leaving these unset (the default) leaves channels unnamed, exactly as before. Not every application reads channel names — some show their own generic labels regardless of what the driver reports.
 
 ### Mirror Device
 
